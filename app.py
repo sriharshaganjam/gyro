@@ -16,6 +16,43 @@ st.markdown("""
         [data-testid="stAppViewContainer"] { padding: 0 !important; }
         [data-testid="stVerticalBlock"] { gap: 0 !important; padding: 0 !important; }
     </style>
+
+    <!-- Gyro bridge: parent page forwards deviceorientation into iframe -->
+    <script>
+    (function() {
+        function sendToIframes(data) {
+            document.querySelectorAll('iframe').forEach(function(f) {
+                try { f.contentWindow.postMessage(data, '*'); } catch(e) {}
+            });
+        }
+
+        function startGyro() {
+            window.addEventListener('deviceorientation', function(e) {
+                sendToIframes({ type: 'gyro', alpha: e.alpha, beta: e.beta, gamma: e.gamma });
+            }, true);
+        }
+
+        // Listen for iframe requesting iOS permission
+        window.addEventListener('message', function(e) {
+            if (!e.data || e.data.type !== 'requestGyroPermission') return;
+            if (typeof DeviceOrientationEvent !== 'undefined' &&
+                typeof DeviceOrientationEvent.requestPermission === 'function') {
+                DeviceOrientationEvent.requestPermission().then(function(s) {
+                    if (s === 'granted') startGyro();
+                    sendToIframes({ type: 'gyroPermissionResult', granted: s === 'granted' });
+                }).catch(function(){});
+            } else {
+                startGyro();
+                sendToIframes({ type: 'gyroPermissionResult', granted: true });
+            }
+        });
+
+        // Android: start immediately
+        if (/Android/i.test(navigator.userAgent)) {
+            startGyro();
+        }
+    })();
+    </script>
 """, unsafe_allow_html=True)
 
 FILE_ID = "18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
@@ -25,11 +62,9 @@ def load_image_as_base64(file_id):
     session = requests.Session()
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # Step 1: hit the URL to get cookies / confirm token
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    r = session.get(url, headers=headers)  # non-streaming, get full response for token parsing
+    r = session.get(url, headers=headers)
 
-    # Step 2: find confirm token from cookies or response text
     confirm = None
     for k, v in r.cookies.items():
         if k.startswith("download_warning"):
@@ -41,14 +76,12 @@ def load_image_as_base64(file_id):
         if m:
             confirm = m.group(1)
 
-    # Step 3: download the actual file
     if confirm:
         url = f"https://drive.google.com/uc?export=download&confirm={confirm}&id={file_id}"
 
     r2 = session.get(url, headers=headers, stream=True)
     image_bytes = b"".join(r2.iter_content(chunk_size=1024 * 1024))
 
-    # Step 4: open with PIL, check dimensions, resize if needed
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     w, h = img.size
 
@@ -58,7 +91,7 @@ def load_image_as_base64(file_id):
         img = img.resize((MAX_W, new_h), Image.LANCZOS)
 
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=90)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 b64 = load_image_as_base64(FILE_ID)
@@ -72,6 +105,7 @@ html_code = f"""
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     html, body {{ width: 100%; height: 100%; background: #000; overflow: hidden; }}
+
     #pano-container {{
       width: 100vw; height: 100vh;
       position: fixed; top: 0; left: 0;
@@ -86,40 +120,72 @@ html_code = f"""
       color: white; font-size: 15px; font-family: sans-serif;
       background: #000; z-index: 50; text-align: center; padding: 20px;
     }}
+
+    /* Zoom slider — fixed position, high z-index, large touch target */
     #zoom-bar {{
-      position: fixed; bottom: 24px; left: 50%;
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
       transform: translateX(-50%);
       display: none;
-      align-items: center; gap: 10px;
-      background: rgba(0,0,0,0.55);
-      padding: 10px 20px; border-radius: 30px;
-      z-index: 100; backdrop-filter: blur(8px);
+      flex-direction: row;
+      align-items: center;
+      gap: 12px;
+      background: rgba(0,0,0,0.65);
+      padding: 12px 24px;
+      border-radius: 40px;
+      z-index: 9999;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      touch-action: none;
+      pointer-events: all;
     }}
-    #zoom-bar span {{
-      color: white; font-size: 13px; font-family: sans-serif;
-      user-select: none; white-space: nowrap;
+    #zoom-bar .label {{
+      color: white; font-size: 14px; font-family: sans-serif;
+      user-select: none; min-width: 36px; text-align: center;
     }}
-    #zoom-slider {{
-      -webkit-appearance: none;
-      width: 180px; height: 4px;
-      border-radius: 4px; outline: none;
-      background: rgba(255,255,255,0.3);
+    /* Custom range slider with large thumb for touch */
+    #zoom-track {{
+      position: relative;
+      width: 200px; height: 36px;
+      display: flex; align-items: center;
+      touch-action: none;
       cursor: pointer;
     }}
-    #zoom-slider::-webkit-slider-thumb {{
-      -webkit-appearance: none;
-      width: 22px; height: 22px;
-      border-radius: 50%; background: white;
-      cursor: pointer; box-shadow: 0 0 4px rgba(0,0,0,0.4);
+    #zoom-fill {{
+      position: absolute;
+      left: 0; top: 50%;
+      transform: translateY(-50%);
+      height: 4px; border-radius: 4px;
+      background: white;
+      pointer-events: none;
     }}
+    #zoom-bg {{
+      position: absolute;
+      left: 0; top: 50%;
+      transform: translateY(-50%);
+      width: 100%; height: 4px; border-radius: 4px;
+      background: rgba(255,255,255,0.3);
+      pointer-events: none;
+    }}
+    #zoom-thumb {{
+      position: absolute;
+      top: 50%; transform: translateY(-50%);
+      width: 28px; height: 28px; border-radius: 50%;
+      background: white;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+      pointer-events: none;
+    }}
+
     #gyro-btn {{
-      position: fixed; bottom: 90px; left: 50%;
+      position: fixed; bottom: 100px; left: 50%;
       transform: translateX(-50%);
       background: rgba(255,255,255,0.15); color: white;
-      border: 2px solid rgba(255,255,255,0.6);
-      padding: 12px 28px; border-radius: 30px;
-      font-size: 15px; font-family: sans-serif;
-      cursor: pointer; z-index: 100; display: none;
+      border: 2px solid rgba(255,255,255,0.7);
+      padding: 14px 32px; border-radius: 30px;
+      font-size: 16px; font-family: sans-serif;
+      cursor: pointer; z-index: 9999; display: none;
+      touch-action: manipulation;
     }}
   </style>
 </head>
@@ -127,19 +193,27 @@ html_code = f"""
 
 <div id="pano-container"><canvas id="canvas"></canvas></div>
 <div id="status">Loading...</div>
+
 <div id="zoom-bar">
-  <span>🔭</span>
-  <input id="zoom-slider" type="range" min="30" max="110" value="75" step="1">
-  <span id="zoom-label">75°</span>
+  <span class="label">🔭</span>
+  <div id="zoom-track">
+    <div id="zoom-bg"></div>
+    <div id="zoom-fill"></div>
+    <div id="zoom-thumb"></div>
+  </div>
+  <span class="label" id="zoom-label">75°</span>
 </div>
+
 <button id="gyro-btn" onclick="enableGyro()">📱 Enable Gyroscope</button>
 
 <script>
-const statusEl   = document.getElementById('status');
-const zoomBar    = document.getElementById('zoom-bar');
-const zoomSlider = document.getElementById('zoom-slider');
-const zoomLabel  = document.getElementById('zoom-label');
-const gyroBtn    = document.getElementById('gyro-btn');
+const statusEl = document.getElementById('status');
+const zoomBar  = document.getElementById('zoom-bar');
+const zoomTrack= document.getElementById('zoom-track');
+const zoomFill = document.getElementById('zoom-fill');
+const zoomThumb= document.getElementById('zoom-thumb');
+const zoomLabel= document.getElementById('zoom-label');
+const gyroBtn  = document.getElementById('gyro-btn');
 const log = msg => {{ statusEl.textContent = msg; console.log(msg); }};
 
 function loadScript(url, ok, fail) {{
@@ -151,11 +225,11 @@ function loadScript(url, ok, fail) {{
 log("Loading Three.js...");
 loadScript(
   "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
-  () => {{ log("Initialising viewer..."); initViewer(); }},
+  () => {{ log("Initialising..."); initViewer(); }},
   () => loadScript(
     "https://cdn.jsdelivr.net/npm/three@0.128/build/three.min.js",
-    () => {{ log("Initialising viewer..."); initViewer(); }},
-    () => log("❌ Three.js failed to load — check internet")
+    () => {{ log("Initialising..."); initViewer(); }},
+    () => log("❌ Three.js failed to load")
   )
 );
 
@@ -166,8 +240,10 @@ function initViewer() {{
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
 
-  const scene  = new THREE.Scene();
-  let   fov    = 75;
+  const scene = new THREE.Scene();
+  const FOV_MIN = 30, FOV_MAX = 110, FOV_START = 60;
+  let fov = FOV_START;
+
   const camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, 0, 0.01);
 
@@ -189,6 +265,7 @@ function initViewer() {{
       scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({{ map: tex }})));
       statusEl.style.display = 'none';
       zoomBar.style.display  = 'flex';
+      applyFov(FOV_START);
       setupControls();
       animate();
     }},
@@ -196,25 +273,47 @@ function initViewer() {{
     () => log("❌ Image decode failed")
   );
 
-  let lon = 0, lat = 0, fovVal = 75;
+  // ── State ────────────────────────────────────────────
+  let lon = 0, lat = 0;
   let drag = false, pm = {{x:0,y:0}};
   let pt = null, pd = null;
   let gyroOn = false, aOff = null;
 
+  // ── Custom zoom slider (canvas-level touch) ───────────
   function applyFov(v) {{
-    fovVal = Math.max(30, Math.min(110, v));
-    camera.fov = fovVal;
+    fov = Math.max(FOV_MIN, Math.min(FOV_MAX, v));
+    camera.fov = fov;
     camera.updateProjectionMatrix();
-    zoomSlider.value = fovVal;
-    zoomLabel.textContent = Math.round(fovVal) + '°';
+    zoomLabel.textContent = Math.round(fov) + '°';
+    const pct = (fov - FOV_MIN) / (FOV_MAX - FOV_MIN);
+    const trackW = zoomTrack.offsetWidth;
+    const thumbW = 28;
+    const x = pct * (trackW - thumbW);
+    zoomThumb.style.left = x + 'px';
+    zoomFill.style.width = (x + thumbW/2) + 'px';
   }}
-  zoomSlider.addEventListener('input', () => applyFov(+zoomSlider.value));
-  applyFov(75);
 
+  function fovFromTrackX(clientX) {{
+    const rect = zoomTrack.getBoundingClientRect();
+    const pct  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return FOV_MIN + pct * (FOV_MAX - FOV_MIN);
+  }}
+
+  let sliderDrag = false;
+  zoomTrack.addEventListener('mousedown',  e => {{ sliderDrag=true; applyFov(fovFromTrackX(e.clientX)); e.stopPropagation(); }});
+  window.addEventListener('mouseup',       () => sliderDrag=false);
+  window.addEventListener('mousemove',     e => {{ if(sliderDrag) applyFov(fovFromTrackX(e.clientX)); }});
+  zoomTrack.addEventListener('touchstart', e => {{ sliderDrag=true; applyFov(fovFromTrackX(e.touches[0].clientX)); e.stopPropagation(); }}, {{passive:true}});
+  window.addEventListener('touchend',      () => sliderDrag=false);
+  window.addEventListener('touchmove',     e => {{
+    if (sliderDrag) applyFov(fovFromTrackX(e.touches[0].clientX));
+  }}, {{passive:true}});
+
+  // ── Mouse drag to pan ─────────────────────────────────
   canvas.addEventListener('mousedown', e => {{ drag=true; pm={{x:e.clientX,y:e.clientY}}; }});
   window.addEventListener('mouseup',   () => drag=false);
   window.addEventListener('mousemove', e => {{
-    if (!drag) return;
+    if (!drag || sliderDrag) return;
     lon -= (e.clientX-pm.x)*0.2;
     lat += (e.clientY-pm.y)*0.2;
     lat = Math.max(-85,Math.min(85,lat));
@@ -222,25 +321,31 @@ function initViewer() {{
   }});
   canvas.addEventListener('wheel', e => {{
     e.preventDefault();
-    applyFov(fovVal + e.deltaY*0.05);
+    applyFov(fov + e.deltaY*0.05);
   }}, {{passive:false}});
 
+  // ── Touch: single finger pan, two finger pinch zoom ───
   canvas.addEventListener('touchstart', e => {{
+    if (sliderDrag) return;
     e.preventDefault();
-    if (e.touches.length===1) {{ pt={{x:e.touches[0].clientX,y:e.touches[0].clientY}}; pd=null; }}
-    else if (e.touches.length===2) {{
+    if (e.touches.length===1) {{
+      pt={{x:e.touches[0].clientX,y:e.touches[0].clientY}}; pd=null;
+    }} else if (e.touches.length===2) {{
       pt=null;
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       pd=Math.sqrt(dx*dx+dy*dy);
     }}
   }},{{passive:false}});
+
   canvas.addEventListener('touchend', e => {{
     e.preventDefault();
     if(e.touches.length<2) pd=null;
     if(e.touches.length===0) pt=null;
   }},{{passive:false}});
+
   canvas.addEventListener('touchmove', e => {{
+    if (sliderDrag) return;
     e.preventDefault();
     if (e.touches.length===1 && pt) {{
       lon -= (e.touches[0].clientX-pt.x)*0.2;
@@ -251,45 +356,42 @@ function initViewer() {{
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const d=Math.sqrt(dx*dx+dy*dy);
-      applyFov(fovVal+(pd-d)*0.15);
+      applyFov(fov+(pd-d)*0.15);
       pd=d;
     }}
   }},{{passive:false}});
 
-  function onGyro(e) {{
-    if (!gyroOn || e.alpha==null) return;
-    if (aOff===null) aOff=e.alpha;
-    const portrait = window.innerHeight > window.innerWidth;
-    lon = -(e.alpha-aOff);
-    lat = portrait ? -(e.beta-90) : -e.gamma;
-    lat = Math.max(-85,Math.min(85,lat));
-  }}
+  // ── Gyro via postMessage from parent bridge ───────────
+  window.addEventListener('message', e => {{
+    if (!e.data) return;
+    if (e.data.type === 'gyroPermissionResult') {{
+      if (e.data.granted) gyroOn = true;
+    }}
+    if (e.data.type === 'gyro') {{
+      if (!gyroOn || e.data.alpha==null) return;
+      if (aOff===null) aOff = e.data.alpha;
+      const portrait = window.innerHeight > window.innerWidth;
+      lon = -(e.data.alpha - aOff);
+      lat = portrait ? -(e.data.beta - 90) : -e.data.gamma;
+      lat = Math.max(-85,Math.min(85,lat));
+    }}
+  }});
 
   function setupControls() {{
     const isIOS     = /iPhone|iPad|iPod/i.test(navigator.userAgent);
     const isAndroid = /Android/i.test(navigator.userAgent);
     if (isAndroid) {{
-      window.addEventListener('deviceorientation', onGyro, true);
-      gyroOn=true;
+      // Parent bridge already started for Android
+      gyroOn = true;
     }} else if (isIOS) {{
-      gyroBtn.style.display='block';
+      gyroBtn.style.display = 'block';
     }}
   }}
 
   window.enableGyro = function() {{
-    gyroBtn.style.display='none';
-    if (typeof DeviceOrientationEvent.requestPermission==='function') {{
-      DeviceOrientationEvent.requestPermission()
-        .then(r => {{
-          if (r==='granted') {{
-            window.addEventListener('deviceorientation', onGyro, true);
-            gyroOn=true;
-          }}
-        }}).catch(()=>{{}});
-    }} else {{
-      window.addEventListener('deviceorientation', onGyro, true);
-      gyroOn=true;
-    }}
+    gyroBtn.style.display = 'none';
+    // Ask parent to request permission and start bridge
+    window.parent.postMessage({{ type: 'requestGyroPermission' }}, '*');
   }};
 
   function animate() {{
