@@ -7,7 +7,7 @@ st.set_page_config(layout="wide")
 # Paste your Google Drive direct link here
 # Format: https://drive.google.com/uc?export=download&id=YOUR_FILE_ID
 # -------------------------------------------------------
-IMAGE_URL = "https://drive.google.com/uc?export=download&id=18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
+IMAGE_URL = "https://drive.google.com/uc?export=download&confirm=t&id=18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
 
 html_code = f"""
 <!DOCTYPE html>
