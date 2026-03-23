@@ -23,49 +23,39 @@ FILE_ID = "18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
 @st.cache_data(show_spinner="Downloading panorama...")
 def load_image_as_base64(file_id):
     session = requests.Session()
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
-    # Use the export=download with a user-agent to avoid compressed preview
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-
-    # First request to get confirmation token for large files
+    # Step 1: hit the URL to get cookies / confirm token
     url = f"https://drive.google.com/uc?export=download&id={file_id}"
-    r = session.get(url, headers=headers, stream=True)
+    r = session.get(url, headers=headers)  # non-streaming, get full response for token parsing
 
-    # Handle Google's virus-scan warning for large files
-    confirm_token = None
+    # Step 2: find confirm token from cookies or response text
+    confirm = None
     for k, v in r.cookies.items():
         if k.startswith("download_warning"):
-            confirm_token = v
+            confirm = v
             break
-
-    # Also check response content for newer-style confirm token
-    if confirm_token is None:
+    if confirm is None:
         import re
-        content_start = b"".join(r.iter_content(8192) for _ in range(10))
-        match = re.search(b'confirm=([0-9A-Za-z_-]+)', content_start)
-        if match:
-            confirm_token = match.group(1).decode()
+        m = re.search(r'confirm=([0-9A-Za-z_\-]+)', r.text)
+        if m:
+            confirm = m.group(1)
 
-    if confirm_token:
-        url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
-        r = session.get(url, headers=headers, stream=True)
+    # Step 3: download the actual file
+    if confirm:
+        url = f"https://drive.google.com/uc?export=download&confirm={confirm}&id={file_id}"
 
-    image_bytes = b"".join(r.iter_content(chunk_size=1024 * 1024))
+    r2 = session.get(url, headers=headers, stream=True)
+    image_bytes = b"".join(r2.iter_content(chunk_size=1024 * 1024))
 
-    # Open with PIL to check and resize
+    # Step 4: open with PIL, check dimensions, resize if needed
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     w, h = img.size
-    st.write(f"Downloaded image: {w}×{h}px ({len(image_bytes)/1024/1024:.1f}MB)")
 
-    # Resize to max 4096px wide — sweet spot for mobile GPU texture limits
-    # while keeping full equirectangular 2:1 ratio
     MAX_W = 4096
     if w > MAX_W:
         new_h = int(h * MAX_W / w)
         img = img.resize((MAX_W, new_h), Image.LANCZOS)
-        st.write(f"Resized to: {MAX_W}×{new_h}px for optimal mobile performance")
 
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
@@ -206,24 +196,21 @@ function initViewer() {{
     () => log("❌ Image decode failed")
   );
 
-  // ── State ────────────────────────────────────────────
-  let lon = 0, lat = 0;
+  let lon = 0, lat = 0, fovVal = 75;
   let drag = false, pm = {{x:0,y:0}};
   let pt = null, pd = null;
   let gyroOn = false, aOff = null;
 
-  // ── Zoom (slider + pinch + scroll) ───────────────────
   function applyFov(v) {{
-    fov = Math.max(30, Math.min(110, v));
-    camera.fov = fov;
+    fovVal = Math.max(30, Math.min(110, v));
+    camera.fov = fovVal;
     camera.updateProjectionMatrix();
-    zoomSlider.value = fov;
-    zoomLabel.textContent = Math.round(fov) + '°';
+    zoomSlider.value = fovVal;
+    zoomLabel.textContent = Math.round(fovVal) + '°';
   }}
   zoomSlider.addEventListener('input', () => applyFov(+zoomSlider.value));
   applyFov(75);
 
-  // ── Mouse ────────────────────────────────────────────
   canvas.addEventListener('mousedown', e => {{ drag=true; pm={{x:e.clientX,y:e.clientY}}; }});
   window.addEventListener('mouseup',   () => drag=false);
   window.addEventListener('mousemove', e => {{
@@ -235,10 +222,9 @@ function initViewer() {{
   }});
   canvas.addEventListener('wheel', e => {{
     e.preventDefault();
-    applyFov(fov + e.deltaY*0.05);
+    applyFov(fovVal + e.deltaY*0.05);
   }}, {{passive:false}});
 
-  // ── Touch ────────────────────────────────────────────
   canvas.addEventListener('touchstart', e => {{
     e.preventDefault();
     if (e.touches.length===1) {{ pt={{x:e.touches[0].clientX,y:e.touches[0].clientY}}; pd=null; }}
@@ -265,12 +251,11 @@ function initViewer() {{
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const d=Math.sqrt(dx*dx+dy*dy);
-      applyFov(fov+(pd-d)*0.15);
+      applyFov(fovVal+(pd-d)*0.15);
       pd=d;
     }}
   }},{{passive:false}});
 
-  // ── Gyro ─────────────────────────────────────────────
   function onGyro(e) {{
     if (!gyroOn || e.alpha==null) return;
     if (aOff===null) aOff=e.alpha;
@@ -307,7 +292,6 @@ function initViewer() {{
     }}
   }};
 
-  // ── Render loop ──────────────────────────────────────
   function animate() {{
     requestAnimationFrame(animate);
     const phi   = THREE.MathUtils.degToRad(90-lat);
