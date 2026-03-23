@@ -14,7 +14,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ✅ Your Google Drive direct link
-IMAGE_URL = "https://drive.google.com/uc?export=view&id=18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
+IMAGE_URL = "https://pannellum.org/images/alma.jpg"
 
 html_code = f"""
 <!DOCTYPE html>
