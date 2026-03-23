@@ -41,213 +41,193 @@ html_code = f"""
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    html, body {{ width: 100%; height: 100%; background: #000; overflow: hidden; }}
+    html, body {{
+      width: 100%; height: 100%;
+      background: #000; overflow: hidden;
+    }}
     #pano-container {{
       width: 100vw; height: 100vh;
       position: fixed; top: 0; left: 0;
-      overflow: hidden;
     }}
-    canvas {{ width: 100% !important; height: 100% !important; display: block; }}
-    #debug {{
-      position: fixed; top: 16px; left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0,0,0,0.7); color: white;
-      padding: 8px 18px; border-radius: 20px;
-      font-size: 13px; font-family: sans-serif;
-      z-index: 100; pointer-events: none; white-space: nowrap;
+    canvas {{
+      position: absolute; top: 0; left: 0;
+      width: 100% !important; height: 100% !important;
+    }}
+    #status {{
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 16px; font-family: sans-serif;
+      background: #000; z-index: 50;
+      text-align: center; padding: 20px;
     }}
     #gyro-btn {{
       position: fixed; bottom: 40px; left: 50%;
       transform: translateX(-50%);
-      background: rgba(255,255,255,0.15); color: white;
+      background: rgba(255,255,255,0.2); color: white;
       border: 2px solid rgba(255,255,255,0.6);
       padding: 14px 32px; border-radius: 30px;
       font-size: 16px; font-family: sans-serif;
       cursor: pointer; z-index: 100;
-      backdrop-filter: blur(8px); display: none;
+      display: none;
     }}
   </style>
 </head>
 <body>
 <div id="pano-container"><canvas id="canvas"></canvas></div>
-<div id="debug">Loading...</div>
+<div id="status">Loading Three.js...</div>
 <button id="gyro-btn" onclick="enableGyro()">📱 Enable Gyroscope</button>
 
 <script>
-const debug   = document.getElementById('debug');
+const status = document.getElementById('status');
 const gyroBtn = document.getElementById('gyro-btn');
-const log = msg => {{ debug.textContent = msg; console.log(msg); }};
+const log = msg => {{ status.textContent = msg; console.log(msg); }};
 
-// Load Three.js
-const s = document.createElement('script');
-s.src = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js";
-s.onload = init;
-s.onerror = () => {{
-  const s2 = document.createElement('script');
-  s2.src = "https://cdn.jsdelivr.net/npm/three@0.128/build/three.min.js";
-  s2.onload = init; s2.onerror = () => log("Three.js failed");
-  document.head.appendChild(s2);
-}};
-document.head.appendChild(s);
+function loadScript(url, cb, errcb) {{
+  const s = document.createElement('script');
+  s.src = url;
+  s.onload = cb;
+  s.onerror = errcb;
+  document.head.appendChild(s);
+}}
 
-function init() {{
-  log("Loading image...");
-  const container = document.getElementById('pano-container');
+log("Loading Three.js from cdnjs...");
+loadScript(
+  "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
+  () => {{ log("Three.js loaded ✓. Decoding image..."); initViewer(); }},
+  () => {{
+    log("cdnjs failed, trying jsdelivr...");
+    loadScript(
+      "https://cdn.jsdelivr.net/npm/three@0.128/build/three.min.js",
+      () => {{ log("Three.js loaded ✓. Decoding image..."); initViewer(); }},
+      () => log("❌ Three.js failed to load from both CDNs. Check internet connection.")
+    );
+  }}
+);
+
+function initViewer() {{
   const canvas    = document.getElementById('canvas');
+  const container = document.getElementById('pano-container');
+  const W = window.innerWidth;
+  const H = window.innerHeight;
 
-  const renderer = new THREE.WebGLRenderer({{ canvas, antialias: true }});
+  const renderer = new THREE.WebGLRenderer({{ canvas: canvas, antialias: true }});
   renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(W, H);
 
   const scene  = new THREE.Scene();
-  // 180 deg horizontal FOV — widest natural view
-  const FOV_H  = 180;
-  function vFov() {{
-    const aspect = window.innerWidth / window.innerHeight;
-    return (2 * Math.atan(Math.tan(FOV_H * Math.PI / 360) / aspect) * 180 / Math.PI);
-  }}
-  const camera = new THREE.PerspectiveCamera(vFov(), window.innerWidth / window.innerHeight, 0.1, 1000);
+  const aspect = W / H;
+  // Fixed 90deg vertical FOV — feels natural on all screen sizes
+  const camera = new THREE.PerspectiveCamera(90, aspect, 0.1, 1000);
   camera.position.set(0, 0, 0.01);
 
   window.addEventListener('resize', () => {{
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.fov = vFov(); baseFov = vFov();
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
     camera.updateProjectionMatrix();
   }});
 
   const geo = new THREE.SphereGeometry(500, 60, 40);
   geo.scale(-1, 1, 1);
 
-  const img = new Image();
-  img.onload = () => {{
-    const tex = new THREE.Texture(img);
-    tex.needsUpdate = true;
-    scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({{ map: tex }})));
-    log("✓ Drag to look around");
-    setTimeout(() => debug.style.display = 'none', 3000);
-    setupControls();
-    animate();
-  }};
-  img.onerror = () => log("ERROR decoding image");
-  img.src = "{image_data_url}";
+  log("Decoding panorama image...");
+  const tex = new THREE.TextureLoader().load(
+    "{image_data_url}",
+    (t) => {{
+      scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({{ map: t }})));
+      status.style.display = 'none';
+      setupControls();
+      animate();
+    }},
+    undefined,
+    () => log("❌ Failed to decode image texture.")
+  );
 
-  // ── state ───────────────────────────────────────────
-  let lon = 0, lat = 0;          // start dead centre
-  let baseFov = vFov();
-  let isDragging = false, prevMouse = {{x:0,y:0}};
-  let prevTouch = null, prevPinchDist = null;
-  let gyroOn = false, aOff = null, bOff = null;
+  // ── state ──────────────────────────────────────────
+  let lon = 0, lat = 0, baseFov = 90;
+  let drag = false, pm = {{x:0,y:0}};
+  let pt = null, pd = null;
+  let gyroOn = false, aOff = null;
 
-  // ── mouse ────────────────────────────────────────────
-  canvas.addEventListener('mousedown', e => {{ isDragging=true; prevMouse={{x:e.clientX,y:e.clientY}}; }});
-  window.addEventListener('mouseup',   () => isDragging=false);
+  // ── mouse ──────────────────────────────────────────
+  canvas.addEventListener('mousedown', e => {{ drag=true; pm={{x:e.clientX,y:e.clientY}}; }});
+  window.addEventListener('mouseup',   () => drag=false);
   window.addEventListener('mousemove', e => {{
-    if (!isDragging) return;
-    lon -= (e.clientX - prevMouse.x) * 0.15;
-    lat += (e.clientY - prevMouse.y) * 0.15;
-    lat  = Math.max(-85, Math.min(85, lat));
-    prevMouse = {{x:e.clientX, y:e.clientY}};
+    if (!drag) return;
+    lon -= (e.clientX-pm.x)*0.2; lat += (e.clientY-pm.y)*0.2;
+    lat = Math.max(-85,Math.min(85,lat)); pm={{x:e.clientX,y:e.clientY}};
   }});
   canvas.addEventListener('wheel', e => {{
     e.preventDefault();
-    baseFov = Math.max(30, Math.min(180, baseFov + e.deltaY * 0.05));
-    camera.fov = baseFov; camera.updateProjectionMatrix();
+    baseFov = Math.max(40,Math.min(120,baseFov+e.deltaY*0.05));
+    camera.fov=baseFov; camera.updateProjectionMatrix();
   }}, {{passive:false}});
 
-  // ── touch ────────────────────────────────────────────
+  // ── touch ──────────────────────────────────────────
   canvas.addEventListener('touchstart', e => {{
     e.preventDefault();
-    if (e.touches.length === 1) {{
-      prevTouch = {{x:e.touches[0].clientX, y:e.touches[0].clientY}};
-      prevPinchDist = null;
-    }} else if (e.touches.length === 2) {{
-      prevTouch = null;
-      const dx = e.touches[0].clientX - e.touches[1].clientX;
-      const dy = e.touches[0].clientY - e.touches[1].clientY;
-      prevPinchDist = Math.sqrt(dx*dx+dy*dy);
+    if (e.touches.length===1) {{ pt={{x:e.touches[0].clientX,y:e.touches[0].clientY}}; pd=null; }}
+    else if (e.touches.length===2) {{
+      pt=null;
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      pd=Math.sqrt(dx*dx+dy*dy);
     }}
-  }}, {{passive:false}});
-  canvas.addEventListener('touchend', e => {{
-    e.preventDefault();
-    if (e.touches.length < 2) prevPinchDist = null;
-    if (e.touches.length === 0) prevTouch = null;
-  }}, {{passive:false}});
+  }},{{passive:false}});
+  canvas.addEventListener('touchend',  e => {{ e.preventDefault(); if(e.touches.length<2)pd=null; if(e.touches.length===0)pt=null; }},{{passive:false}});
   canvas.addEventListener('touchmove', e => {{
     e.preventDefault();
-    if (e.touches.length === 1 && prevTouch) {{
-      lon -= (e.touches[0].clientX - prevTouch.x) * 0.2;
-      lat += (e.touches[0].clientY - prevTouch.y) * 0.2;
-      lat  = Math.max(-85, Math.min(85, lat));
-      prevTouch = {{x:e.touches[0].clientX, y:e.touches[0].clientY}};
-    }} else if (e.touches.length === 2 && prevPinchDist !== null) {{
-      const dx   = e.touches[0].clientX - e.touches[1].clientX;
-      const dy   = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(dx*dx+dy*dy);
-      baseFov = Math.max(30, Math.min(180, baseFov + (prevPinchDist - dist) * 0.15));
-      camera.fov = baseFov; camera.updateProjectionMatrix();
-      prevPinchDist = dist;
+    if (e.touches.length===1 && pt) {{
+      lon -= (e.touches[0].clientX-pt.x)*0.2;
+      lat += (e.touches[0].clientY-pt.y)*0.2;
+      lat = Math.max(-85,Math.min(85,lat));
+      pt = {{x:e.touches[0].clientX,y:e.touches[0].clientY}};
+    }} else if (e.touches.length===2 && pd!==null) {{
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      baseFov=Math.max(40,Math.min(120,baseFov+(pd-d)*0.15));
+      camera.fov=baseFov; camera.updateProjectionMatrix(); pd=d;
     }}
-  }}, {{passive:false}});
+  }},{{passive:false}});
 
-  // ── gyro: listen DIRECTLY — works on Android ─────────
-  // On Android the iframe DOES receive deviceorientation
-  // On iOS we still need the button for permission
+  // ── gyro ───────────────────────────────────────────
   function onGyro(e) {{
-    if (!gyroOn || e.alpha == null) return;
-    if (aOff === null) {{ aOff = e.alpha; bOff = e.beta; }}
+    if (!gyroOn || e.alpha==null) return;
+    if (aOff===null) aOff = e.alpha;
     const portrait = window.innerHeight > window.innerWidth;
     lon = -(e.alpha - aOff);
-    // beta=90 means phone held upright portrait → looking straight ahead
     lat = portrait ? -(e.beta - 90) : -e.gamma;
-    lat = Math.max(-85, Math.min(85, lat));
+    lat = Math.max(-85,Math.min(85,lat));
   }}
 
   function setupControls() {{
     const isIOS     = /iPhone|iPad|iPod/i.test(navigator.userAgent);
     const isAndroid = /Android/i.test(navigator.userAgent);
-
     if (isAndroid) {{
-      // Android iframes receive deviceorientation directly
       window.addEventListener('deviceorientation', onGyro, true);
       gyroOn = true;
-      log("📱 Gyroscope active — drag to pan");
-      setTimeout(() => debug.style.display = 'none', 3000);
     }} else if (isIOS) {{
       gyroBtn.style.display = 'block';
     }}
   }}
 
-  // iOS button tap
   window.enableGyro = function() {{
     gyroBtn.style.display = 'none';
-    if (typeof DeviceOrientationEvent !== 'undefined' &&
-        typeof DeviceOrientationEvent.requestPermission === 'function') {{
-      DeviceOrientationEvent.requestPermission()
-        .then(res => {{
-          if (res === 'granted') {{
-            window.addEventListener('deviceorientation', onGyro, true);
-            gyroOn = true;
-            log("📱 Gyroscope active");
-            setTimeout(() => debug.style.display = 'none', 2000);
-          }} else {{
-            log("Permission denied — drag to pan");
-          }}
-        }})
-        .catch(() => log("Gyro unavailable — drag to pan"));
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {{
+      DeviceOrientationEvent.requestPermission().then(r => {{
+        if (r==='granted') {{ window.addEventListener('deviceorientation', onGyro, true); gyroOn=true; }}
+      }}).catch(()=>{{}});
     }} else {{
-      // Older iOS — no permission API needed
       window.addEventListener('deviceorientation', onGyro, true);
       gyroOn = true;
-      log("📱 Gyroscope active");
-      setTimeout(() => debug.style.display = 'none', 2000);
     }}
   }};
 
-  // ── render ───────────────────────────────────────────
+  // ── render ─────────────────────────────────────────
   function animate() {{
     requestAnimationFrame(animate);
-    const phi   = THREE.MathUtils.degToRad(90 - lat);
+    const phi   = THREE.MathUtils.degToRad(90-lat);
     const theta = THREE.MathUtils.degToRad(lon);
     camera.lookAt(
       Math.sin(phi)*Math.cos(theta),
