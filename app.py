@@ -1,13 +1,34 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import requests
+import base64
+import io
 
 st.set_page_config(layout="wide")
 
-# -------------------------------------------------------
-# Paste your Google Drive direct link here
-# Format: https://drive.google.com/uc?export=download&id=YOUR_FILE_ID
-# -------------------------------------------------------
-IMAGE_URL = "https://drive.google.com/uc?export=download&confirm=t&id=18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
+FILE_ID = "18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
+
+@st.cache_data(show_spinner="Downloading panorama from Google Drive...")
+def load_image_as_base64(file_id):
+    # Step 1: try direct download
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    session = requests.Session()
+    response = session.get(url, stream=True)
+
+    # Step 2: handle large-file confirmation page
+    for key, value in response.cookies.items():
+        if key.startswith("download_warning"):
+            url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
+            response = session.get(url, stream=True)
+            break
+
+    # Read image bytes
+    image_bytes = b"".join(response.iter_content(chunk_size=1024 * 1024))
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    return b64
+
+b64 = load_image_as_base64(FILE_ID)
+image_data_url = f"data:image/jpeg;base64,{b64}"
 
 html_code = f"""
 <!DOCTYPE html>
@@ -61,7 +82,7 @@ script.onerror = () => {{
 document.head.appendChild(script);
 
 function initPanorama() {{
-  log("Three.js loaded. Fetching panorama...");
+  log("Initialising viewer...");
 
   const container = document.getElementById('pano-container');
   const canvas = document.getElementById('canvas');
@@ -78,31 +99,19 @@ function initPanorama() {{
   const geometry = new THREE.SphereGeometry(500, 60, 40);
   geometry.scale(-1, 1, 1);
 
-  const loader = new THREE.TextureLoader();
-  loader.crossOrigin = "anonymous";
-  loader.load(
-    "{IMAGE_URL}",
-    (texture) => {{
-      log("✓ Panorama loaded! Drag to look around.");
-      setTimeout(() => debug.style.display = 'none', 2000);
-      const material = new THREE.MeshBasicMaterial({{ map: texture }});
-      const sphere = new THREE.Mesh(geometry, material);
-      scene.add(sphere);
-      animate();
-    }},
-    (xhr) => {{
-      if (xhr.total) {{
-        const pct = Math.round(xhr.loaded / xhr.total * 100);
-        log("Downloading panorama: " + pct + "%");
-      }} else {{
-        log("Downloading panorama...");
-      }}
-    }},
-    (err) => {{
-      log("ERROR: Could not load image. Check your Drive link is public.");
-      console.error(err);
-    }}
-  );
+  const image = new Image();
+  image.onload = () => {{
+    log("✓ Panorama loaded! Drag to look around.");
+    setTimeout(() => debug.style.display = 'none', 2000);
+    const texture = new THREE.Texture(image);
+    texture.needsUpdate = true;
+    const material = new THREE.MeshBasicMaterial({{ map: texture }});
+    const sphere = new THREE.Mesh(geometry, material);
+    scene.add(sphere);
+    animate();
+  }};
+  image.onerror = () => log("ERROR: Failed to decode image.");
+  image.src = "{image_data_url}";
 
   let isDragging = false;
   let prevMouse = {{ x: 0, y: 0 }};
@@ -146,7 +155,6 @@ function initPanorama() {{
   }}
 }}
 </script>
-
 </body>
 </html>
 """
