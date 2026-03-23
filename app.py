@@ -13,30 +13,25 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# ✅ Your Google Drive direct link
-IMAGE_URL = "https://pannellum.org/images/alma.jpg"
-
-html_code = f"""
+html_code = """
 <!DOCTYPE html>
 <html>
 <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
     <link rel="stylesheet" href="https://pannellum.org/css/pannellum.css"/>
     <script src="https://pannellum.org/js/pannellum.js"></script>
 
     <style>
-        html, body {{
+        html, body {
             margin: 0;
             height: 100%;
             background: black;
-            overflow: hidden;
-        }}
-
-        #panorama {{
+        }
+        #panorama {
             width: 100vw;
             height: 100vh;
-        }}
+        }
     </style>
 </head>
 
@@ -45,31 +40,34 @@ html_code = f"""
 <div id="panorama"></div>
 
 <script>
-pannellum.viewer('panorama', {{
-    type: "equirectangular",
+window.onload = function() {
+    pannellum.viewer('panorama', {
+        type: "equirectangular",
 
-    panorama: "{IMAGE_URL}",
+        // ✅ TEST IMAGE (guaranteed to work)
+        panorama: "https://pannellum.org/images/alma.jpg",
 
-    autoLoad: true,
+        autoLoad: true,
 
-    // Gyro
-    orientationOnByDefault: true,
+        // Gyro
+        orientationOnByDefault: true,
 
-    // Clean UI
-    showControls: false,
+        // Clean UI
+        showControls: false,
 
-    // Better viewing experience
-    hfov: 100,
-    minHfov: 50,
-    maxHfov: 120,
+        // Better viewing feel
+        hfov: 100,
+        minHfov: 50,
+        maxHfov: 120,
 
-    pitch: 0,
-    yaw: 0
-}});
+        pitch: 0,
+        yaw: 0
+    });
+};
 </script>
 
 </body>
 </html>
 """
 
-components.html(html_code, height=800, scrolling=False)
+components.html(html_code, height=900)
