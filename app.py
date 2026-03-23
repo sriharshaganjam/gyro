@@ -2,6 +2,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 import requests
 import base64
+from PIL import Image
+import io
 
 st.set_page_config(layout="wide", page_title="360 Viewer")
 
@@ -20,16 +22,54 @@ FILE_ID = "18JMqRl4agEJwJo5YVIi2NTEDDr_-CIpg"
 
 @st.cache_data(show_spinner="Downloading panorama...")
 def load_image_as_base64(file_id):
-    url = f"https://drive.google.com/uc?export=download&id={file_id}"
     session = requests.Session()
-    response = session.get(url, stream=True)
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            url = f"https://drive.google.com/uc?export=download&confirm={value}&id={file_id}"
-            response = session.get(url, stream=True)
+
+    # Use the export=download with a user-agent to avoid compressed preview
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
+    # First request to get confirmation token for large files
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    r = session.get(url, headers=headers, stream=True)
+
+    # Handle Google's virus-scan warning for large files
+    confirm_token = None
+    for k, v in r.cookies.items():
+        if k.startswith("download_warning"):
+            confirm_token = v
             break
-    image_bytes = b"".join(response.iter_content(chunk_size=1024 * 1024))
-    return base64.b64encode(image_bytes).decode("utf-8")
+
+    # Also check response content for newer-style confirm token
+    if confirm_token is None:
+        import re
+        content_start = b"".join(r.iter_content(8192) for _ in range(10))
+        match = re.search(b'confirm=([0-9A-Za-z_-]+)', content_start)
+        if match:
+            confirm_token = match.group(1).decode()
+
+    if confirm_token:
+        url = f"https://drive.google.com/uc?export=download&confirm={confirm_token}&id={file_id}"
+        r = session.get(url, headers=headers, stream=True)
+
+    image_bytes = b"".join(r.iter_content(chunk_size=1024 * 1024))
+
+    # Open with PIL to check and resize
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    w, h = img.size
+    st.write(f"Downloaded image: {w}×{h}px ({len(image_bytes)/1024/1024:.1f}MB)")
+
+    # Resize to max 4096px wide — sweet spot for mobile GPU texture limits
+    # while keeping full equirectangular 2:1 ratio
+    MAX_W = 4096
+    if w > MAX_W:
+        new_h = int(h * MAX_W / w)
+        img = img.resize((MAX_W, new_h), Image.LANCZOS)
+        st.write(f"Resized to: {MAX_W}×{new_h}px for optimal mobile performance")
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 b64 = load_image_as_base64(FILE_ID)
 image_data_url = f"data:image/jpeg;base64,{b64}"
@@ -41,10 +81,7 @@ html_code = f"""
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    html, body {{
-      width: 100%; height: 100%;
-      background: #000; overflow: hidden;
-    }}
+    html, body {{ width: 100%; height: 100%; background: #000; overflow: hidden; }}
     #pano-container {{
       width: 100vw; height: 100vh;
       position: fixed; top: 0; left: 0;
@@ -54,116 +91,154 @@ html_code = f"""
       width: 100% !important; height: 100% !important;
     }}
     #status {{
-      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      position: fixed; inset: 0;
       display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 16px; font-family: sans-serif;
-      background: #000; z-index: 50;
-      text-align: center; padding: 20px;
+      color: white; font-size: 15px; font-family: sans-serif;
+      background: #000; z-index: 50; text-align: center; padding: 20px;
+    }}
+    #zoom-bar {{
+      position: fixed; bottom: 24px; left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      align-items: center; gap: 10px;
+      background: rgba(0,0,0,0.55);
+      padding: 10px 20px; border-radius: 30px;
+      z-index: 100; backdrop-filter: blur(8px);
+    }}
+    #zoom-bar span {{
+      color: white; font-size: 13px; font-family: sans-serif;
+      user-select: none; white-space: nowrap;
+    }}
+    #zoom-slider {{
+      -webkit-appearance: none;
+      width: 180px; height: 4px;
+      border-radius: 4px; outline: none;
+      background: rgba(255,255,255,0.3);
+      cursor: pointer;
+    }}
+    #zoom-slider::-webkit-slider-thumb {{
+      -webkit-appearance: none;
+      width: 22px; height: 22px;
+      border-radius: 50%; background: white;
+      cursor: pointer; box-shadow: 0 0 4px rgba(0,0,0,0.4);
     }}
     #gyro-btn {{
-      position: fixed; bottom: 40px; left: 50%;
+      position: fixed; bottom: 90px; left: 50%;
       transform: translateX(-50%);
-      background: rgba(255,255,255,0.2); color: white;
+      background: rgba(255,255,255,0.15); color: white;
       border: 2px solid rgba(255,255,255,0.6);
-      padding: 14px 32px; border-radius: 30px;
-      font-size: 16px; font-family: sans-serif;
-      cursor: pointer; z-index: 100;
-      display: none;
+      padding: 12px 28px; border-radius: 30px;
+      font-size: 15px; font-family: sans-serif;
+      cursor: pointer; z-index: 100; display: none;
     }}
   </style>
 </head>
 <body>
+
 <div id="pano-container"><canvas id="canvas"></canvas></div>
-<div id="status">Loading Three.js...</div>
+<div id="status">Loading...</div>
+<div id="zoom-bar">
+  <span>🔭</span>
+  <input id="zoom-slider" type="range" min="30" max="110" value="75" step="1">
+  <span id="zoom-label">75°</span>
+</div>
 <button id="gyro-btn" onclick="enableGyro()">📱 Enable Gyroscope</button>
 
 <script>
-const status = document.getElementById('status');
-const gyroBtn = document.getElementById('gyro-btn');
-const log = msg => {{ status.textContent = msg; console.log(msg); }};
+const statusEl   = document.getElementById('status');
+const zoomBar    = document.getElementById('zoom-bar');
+const zoomSlider = document.getElementById('zoom-slider');
+const zoomLabel  = document.getElementById('zoom-label');
+const gyroBtn    = document.getElementById('gyro-btn');
+const log = msg => {{ statusEl.textContent = msg; console.log(msg); }};
 
-function loadScript(url, cb, errcb) {{
+function loadScript(url, ok, fail) {{
   const s = document.createElement('script');
-  s.src = url;
-  s.onload = cb;
-  s.onerror = errcb;
+  s.src = url; s.onload = ok; s.onerror = fail;
   document.head.appendChild(s);
 }}
 
-log("Loading Three.js from cdnjs...");
+log("Loading Three.js...");
 loadScript(
   "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js",
-  () => {{ log("Three.js loaded ✓. Decoding image..."); initViewer(); }},
-  () => {{
-    log("cdnjs failed, trying jsdelivr...");
-    loadScript(
-      "https://cdn.jsdelivr.net/npm/three@0.128/build/three.min.js",
-      () => {{ log("Three.js loaded ✓. Decoding image..."); initViewer(); }},
-      () => log("❌ Three.js failed to load from both CDNs. Check internet connection.")
-    );
-  }}
+  () => {{ log("Initialising viewer..."); initViewer(); }},
+  () => loadScript(
+    "https://cdn.jsdelivr.net/npm/three@0.128/build/three.min.js",
+    () => {{ log("Initialising viewer..."); initViewer(); }},
+    () => log("❌ Three.js failed to load — check internet")
+  )
 );
 
 function initViewer() {{
-  const canvas    = document.getElementById('canvas');
-  const container = document.getElementById('pano-container');
-  const W = window.innerWidth;
-  const H = window.innerHeight;
+  const canvas = document.getElementById('canvas');
 
-  const renderer = new THREE.WebGLRenderer({{ canvas: canvas, antialias: true }});
-  renderer.setPixelRatio(window.devicePixelRatio);
-  renderer.setSize(W, H);
+  const renderer = new THREE.WebGLRenderer({{ canvas, antialias: true }});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
 
   const scene  = new THREE.Scene();
-  const aspect = W / H;
-  // Fixed 90deg vertical FOV — feels natural on all screen sizes
-  const camera = new THREE.PerspectiveCamera(90, aspect, 0.1, 1000);
+  let   fov    = 75;
+  const camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, 0, 0.01);
 
   window.addEventListener('resize', () => {{
-    const w = window.innerWidth, h = window.innerHeight;
-    renderer.setSize(w, h);
-    camera.aspect = w / h;
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
   }});
 
-  const geo = new THREE.SphereGeometry(500, 60, 40);
+  const geo = new THREE.SphereGeometry(500, 80, 60);
   geo.scale(-1, 1, 1);
 
-  log("Decoding panorama image...");
-  const tex = new THREE.TextureLoader().load(
+  log("Decoding image...");
+  new THREE.TextureLoader().load(
     "{image_data_url}",
-    (t) => {{
-      scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({{ map: t }})));
-      status.style.display = 'none';
+    (tex) => {{
+      tex.minFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({{ map: tex }})));
+      statusEl.style.display = 'none';
+      zoomBar.style.display  = 'flex';
       setupControls();
       animate();
     }},
     undefined,
-    () => log("❌ Failed to decode image texture.")
+    () => log("❌ Image decode failed")
   );
 
-  // ── state ──────────────────────────────────────────
-  let lon = 0, lat = 0, baseFov = 90;
+  // ── State ────────────────────────────────────────────
+  let lon = 0, lat = 0;
   let drag = false, pm = {{x:0,y:0}};
   let pt = null, pd = null;
   let gyroOn = false, aOff = null;
 
-  // ── mouse ──────────────────────────────────────────
+  // ── Zoom (slider + pinch + scroll) ───────────────────
+  function applyFov(v) {{
+    fov = Math.max(30, Math.min(110, v));
+    camera.fov = fov;
+    camera.updateProjectionMatrix();
+    zoomSlider.value = fov;
+    zoomLabel.textContent = Math.round(fov) + '°';
+  }}
+  zoomSlider.addEventListener('input', () => applyFov(+zoomSlider.value));
+  applyFov(75);
+
+  // ── Mouse ────────────────────────────────────────────
   canvas.addEventListener('mousedown', e => {{ drag=true; pm={{x:e.clientX,y:e.clientY}}; }});
   window.addEventListener('mouseup',   () => drag=false);
   window.addEventListener('mousemove', e => {{
     if (!drag) return;
-    lon -= (e.clientX-pm.x)*0.2; lat += (e.clientY-pm.y)*0.2;
-    lat = Math.max(-85,Math.min(85,lat)); pm={{x:e.clientX,y:e.clientY}};
+    lon -= (e.clientX-pm.x)*0.2;
+    lat += (e.clientY-pm.y)*0.2;
+    lat = Math.max(-85,Math.min(85,lat));
+    pm = {{x:e.clientX,y:e.clientY}};
   }});
   canvas.addEventListener('wheel', e => {{
     e.preventDefault();
-    baseFov = Math.max(40,Math.min(120,baseFov+e.deltaY*0.05));
-    camera.fov=baseFov; camera.updateProjectionMatrix();
+    applyFov(fov + e.deltaY*0.05);
   }}, {{passive:false}});
 
-  // ── touch ──────────────────────────────────────────
+  // ── Touch ────────────────────────────────────────────
   canvas.addEventListener('touchstart', e => {{
     e.preventDefault();
     if (e.touches.length===1) {{ pt={{x:e.touches[0].clientX,y:e.touches[0].clientY}}; pd=null; }}
@@ -174,7 +249,11 @@ function initViewer() {{
       pd=Math.sqrt(dx*dx+dy*dy);
     }}
   }},{{passive:false}});
-  canvas.addEventListener('touchend',  e => {{ e.preventDefault(); if(e.touches.length<2)pd=null; if(e.touches.length===0)pt=null; }},{{passive:false}});
+  canvas.addEventListener('touchend', e => {{
+    e.preventDefault();
+    if(e.touches.length<2) pd=null;
+    if(e.touches.length===0) pt=null;
+  }},{{passive:false}});
   canvas.addEventListener('touchmove', e => {{
     e.preventDefault();
     if (e.touches.length===1 && pt) {{
@@ -186,18 +265,18 @@ function initViewer() {{
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const d=Math.sqrt(dx*dx+dy*dy);
-      baseFov=Math.max(40,Math.min(120,baseFov+(pd-d)*0.15));
-      camera.fov=baseFov; camera.updateProjectionMatrix(); pd=d;
+      applyFov(fov+(pd-d)*0.15);
+      pd=d;
     }}
   }},{{passive:false}});
 
-  // ── gyro ───────────────────────────────────────────
+  // ── Gyro ─────────────────────────────────────────────
   function onGyro(e) {{
     if (!gyroOn || e.alpha==null) return;
-    if (aOff===null) aOff = e.alpha;
+    if (aOff===null) aOff=e.alpha;
     const portrait = window.innerHeight > window.innerWidth;
-    lon = -(e.alpha - aOff);
-    lat = portrait ? -(e.beta - 90) : -e.gamma;
+    lon = -(e.alpha-aOff);
+    lat = portrait ? -(e.beta-90) : -e.gamma;
     lat = Math.max(-85,Math.min(85,lat));
   }}
 
@@ -206,25 +285,29 @@ function initViewer() {{
     const isAndroid = /Android/i.test(navigator.userAgent);
     if (isAndroid) {{
       window.addEventListener('deviceorientation', onGyro, true);
-      gyroOn = true;
+      gyroOn=true;
     }} else if (isIOS) {{
-      gyroBtn.style.display = 'block';
+      gyroBtn.style.display='block';
     }}
   }}
 
   window.enableGyro = function() {{
-    gyroBtn.style.display = 'none';
-    if (typeof DeviceOrientationEvent.requestPermission === 'function') {{
-      DeviceOrientationEvent.requestPermission().then(r => {{
-        if (r==='granted') {{ window.addEventListener('deviceorientation', onGyro, true); gyroOn=true; }}
-      }}).catch(()=>{{}});
+    gyroBtn.style.display='none';
+    if (typeof DeviceOrientationEvent.requestPermission==='function') {{
+      DeviceOrientationEvent.requestPermission()
+        .then(r => {{
+          if (r==='granted') {{
+            window.addEventListener('deviceorientation', onGyro, true);
+            gyroOn=true;
+          }}
+        }}).catch(()=>{{}});
     }} else {{
       window.addEventListener('deviceorientation', onGyro, true);
-      gyroOn = true;
+      gyroOn=true;
     }}
   }};
 
-  // ── render ─────────────────────────────────────────
+  // ── Render loop ──────────────────────────────────────
   function animate() {{
     requestAnimationFrame(animate);
     const phi   = THREE.MathUtils.degToRad(90-lat);
