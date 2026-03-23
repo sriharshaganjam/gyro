@@ -139,7 +139,7 @@ function initPanorama() {{
   renderer.setSize(window.innerWidth, window.innerHeight);
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.1, 1000);
+  const camera = new THREE.PerspectiveCamera(100, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.set(0, 0, 0.01);
 
   window.addEventListener('resize', () => {{
@@ -215,30 +215,37 @@ function initPanorama() {{
 
   // ── Gyroscope ──────────────────────────────────────────
   function setupControls() {{
-    const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-    if (!isMobile) return;
-
-    // iOS 13+ requires permission
-    if (typeof DeviceOrientationEvent !== 'undefined' &&
-        typeof DeviceOrientationEvent.requestPermission === 'function') {{
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    if (isIOS) {{
+      // Always show button on iOS — need a user gesture to start gyro
       gyroBtn.style.display = 'block';
-    }} else {{
-      // Android — just start listening
+    }} else if (isAndroid) {{
       startGyro();
     }}
   }}
 
   window.requestGyro = function() {{
-    DeviceOrientationEvent.requestPermission()
-      .then(state => {{
-        if (state === 'granted') {{
-          gyroBtn.style.display = 'none';
-          startGyro();
-        }} else {{
-          log("Gyroscope permission denied");
-        }}
-      }})
-      .catch(() => log("Gyroscope not supported"));
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {{
+      // iOS 13+ — request permission explicitly
+      DeviceOrientationEvent.requestPermission()
+        .then(state => {{
+          if (state === 'granted') {{
+            gyroBtn.style.display = 'none';
+            startGyro();
+          }} else {{
+            log("Gyroscope permission denied");
+          }}
+        }})
+        .catch(err => {{
+          log("Permission error: " + err);
+        }});
+    }} else {{
+      // Older iOS — no permission API, just start listening
+      gyroBtn.style.display = 'none';
+      startGyro();
+    }}
   }};
 
   function startGyro() {{
