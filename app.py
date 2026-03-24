@@ -1,73 +1,42 @@
 import streamlit as st
-import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide")
 
-# Clean full-screen layout
+# Clean UI
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
         header {visibility: hidden;}
         footer {visibility: hidden;}
         .block-container { padding: 0 !important; margin: 0 !important; max-width: 100% !important; }
+        body { margin: 0; }
     </style>
 """, unsafe_allow_html=True)
 
 html_code = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<div id="panorama" style="width:100vw; height:100vh;"></div>
 
-    <link rel="stylesheet" href="https://pannellum.org/css/pannellum.css"/>
-    <script src="https://pannellum.org/js/pannellum.js"></script>
-
-    <style>
-        html, body {
-            margin: 0;
-            height: 100%;
-            background: black;
-        }
-        #panorama {
-            width: 100vw;
-            height: 100vh;
-        }
-    </style>
-</head>
-
-<body>
-
-<div id="panorama"></div>
+<link rel="stylesheet" href="https://pannellum.org/css/pannellum.css"/>
+<script src="https://pannellum.org/js/pannellum.js"></script>
 
 <script>
-window.onload = function() {
+setTimeout(function() {
     pannellum.viewer('panorama', {
         type: "equirectangular",
 
-        // ✅ TEST IMAGE (guaranteed to work)
+        // ✅ guaranteed working test image
         panorama: "https://pannellum.org/images/alma.jpg",
 
         autoLoad: true,
-
-        // Gyro
+        showControls: false,
         orientationOnByDefault: true,
 
-        // Clean UI
-        showControls: false,
-
-        // Better viewing feel
         hfov: 100,
         minHfov: 50,
-        maxHfov: 120,
-
-        pitch: 0,
-        yaw: 0
+        maxHfov: 120
     });
-};
+}, 500);
 </script>
-
-</body>
-</html>
 """
 
-components.html(html_code, height=900)
+st.html(html_code, height=900)
